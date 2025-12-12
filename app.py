@@ -38,10 +38,10 @@ class_names = [
 @st.cache_resource
 def load_model():
     try:
-        model = keras.models.load_model('plant_disease_model.h5')
+        model = keras.models.load_model('plant_disease_model.keras')
         return model
     except:
-        st.error("Model file not found. Please ensure 'plant_disease_model.h5' is in the same directory.")
+        st.error("Model file not found. Please ensure 'plant_disease_model.keras' is in the same directory.")
         return None
 
 # Preprocess image
