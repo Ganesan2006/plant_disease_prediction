@@ -1,514 +1,295 @@
 import streamlit as st
 import tensorflow as tf
 from tensorflow import keras
-import numpy as np
 from PIL import Image
-import os
+import numpy as np
 import zipfile
-import shutil
+import os
 from pathlib import Path
 
-# --------------------------------------------------
-# Page configuration
-# --------------------------------------------------
+# Page config
 st.set_page_config(
     page_title="Plant Disease Detection",
     page_icon="🌿",
     layout="wide"
 )
 
-st.title("🌿 Plant Disease Detection")
-st.write("Upload a plant leaf image or use sample images to detect diseases using a deep learning CNN model.")
-
-# --------------------------------------------------
-# Class names – MUST match training order (15 classes)
-# --------------------------------------------------
-class_names = [
-    "Tomato__Tomato_mosaic_virus",
-    "Potato___Early_blight",
-    "Tomato_healthy",
-    "Tomato_Septoria_leaf_spot",
-    "Tomato__Tomato_YellowLeaf__Curl_Virus",
-    "Potato___healthy",
-    "Tomato_Leaf_Mold",
-    "Tomato__Target_Spot",
-    "Tomato_Late_blight",
-    "Tomato_Early_blight",
-    "Potato___Late_blight",
-    "Tomato_Spider_mites_Two_spotted_spider_mite",
-    "Pepper__bell___healthy",
-    "Tomato_Bacterial_spot",
-    "Pepper__bell___Bacterial_spot",
+# ⭐ CRITICAL: Class order MUST match training order
+# This order comes directly from image_dataset_from_directory()
+CLASS_NAMES = [
+    'Pepper__bell___Bacterial_spot',
+    'Pepper__bell___healthy',
+    'Potato___Early_blight',
+    'Potato___Late_blight',
+    'Potato___healthy',
+    'Tomato_Bacterial_spot',
+    'Tomato_Early_blight',
+    'Tomato_Late_blight',
+    'Tomato_Leaf_Mold',
+    'Tomato_Septoria_leaf_spot',
+    'Tomato_Spider_mites_Two_spotted_spider_mite',
+    'Tomato__Target_Spot',
+    'Tomato__Tomato_YellowLeaf__Curl_Virus',
+    'Tomato__Tomato_mosaic_virus',
+    'Tomato_healthy'
 ]
 
-NUM_CLASSES = len(class_names)
-SAMPLE_DIR = "sample_images"
-ZIP_FILE = "plant_images.zip"
+# Model path
+MODEL_PATH = "plant_disease_model.keras"
+ZIP_PATH = "plant_images.zip"
+EXTRACT_DIR = "sample_images"
 
-# --------------------------------------------------
-# Session state for sample images
-# --------------------------------------------------
-if "samples_loaded" not in st.session_state:
-    st.session_state.samples_loaded = False
-if "sample_dict" not in st.session_state:
-    st.session_state.sample_dict = {}
-if "load_attempted" not in st.session_state:
-    st.session_state.load_attempted = False
+# Auto-load sample images from ZIP
+@st.cache_resource
+def load_sample_images():
+    """Extract sample images from ZIP file"""
+    if not os.path.exists(ZIP_PATH):
+        return None, None
 
-# --------------------------------------------------
-# Helper: Extract ZIP from local repository
-# --------------------------------------------------
-def extract_local_zip(zip_path: str):
-    """
-    Extract plant_disease.zip from local repository.
-    Handles nested folder structure from ZIP exports.
-    """
     try:
-        if not os.path.exists(zip_path):
-            return False, f"❌ ZIP file not found: {zip_path}"
-
-        st.info("📦 Extracting sample images from ZIP...")
-
-        # Clean existing folder
-        if os.path.exists(SAMPLE_DIR):
-            shutil.rmtree(SAMPLE_DIR)
+        # Create extract directory
+        os.makedirs(EXTRACT_DIR, exist_ok=True)
 
         # Extract ZIP
-        with zipfile.ZipFile(zip_path, 'r') as zf:
-            zf.extractall(SAMPLE_DIR)
+        with zipfile.ZipFile(ZIP_PATH, 'r') as zip_ref:
+            zip_ref.extractall(EXTRACT_DIR)
 
-        # Flatten structure if needed
-        flatten_extracted_folder()
+        # Scan for images
+        image_dict = {}
+        total_images = 0
 
-        st.session_state.samples_loaded = True
-        st.session_state.sample_dict = scan_sample_images()
+        for class_name in CLASS_NAMES:
+            class_path = Path(EXTRACT_DIR) / "sample_images" / class_name
+            if class_path.exists():
+                images = list(class_path.glob("*.jpg")) + list(class_path.glob("*.png")) + list(class_path.glob("*.jpeg"))
+                if images:
+                    image_dict[class_name] = [str(img) for img in images]
+                    total_images += len(images)
 
-        total_imgs = sum(len(v) for v in st.session_state.sample_dict.values())
-        return True, f"✅ Successfully extracted! {len(st.session_state.sample_dict)} classes, {total_imgs} images found"
+        return image_dict, total_images
 
-    except zipfile.BadZipFile:
-        return False, "❌ Invalid or corrupted ZIP file"
-    except PermissionError:
-        return False, "❌ Permission denied accessing ZIP file"
     except Exception as e:
-        return False, f"❌ Error extracting ZIP: {str(e)}"
+        st.error(f"Error extracting ZIP: {str(e)}")
+        return None, None
 
-def flatten_extracted_folder():
-    """
-    ZIP may create nested structure: some-folder/sample_images/class/image.jpg
-    We need: sample_images/class/image.jpg
-    This function flattens the structure if needed.
-    """
-    base_dir = SAMPLE_DIR
-    items = os.listdir(base_dir)
-
-    # If only one folder inside and it's not a class name
-    if len(items) == 1 and items[0] not in class_names:
-        nested_path = os.path.join(base_dir, items[0])
-        if os.path.isdir(nested_path):
-            # Check if this contains sample_images
-            nested_items = os.listdir(nested_path)
-            if "sample_images" in nested_items:
-                # Move sample_images content up
-                inner_sample_path = os.path.join(nested_path, "sample_images")
-                temp_dir = os.path.join(base_dir, "temp_move")
-                shutil.move(inner_sample_path, temp_dir)
-                shutil.rmtree(base_dir)
-                shutil.move(temp_dir, base_dir)
-            # Otherwise, move all class folders up
-            elif any(item in nested_items for item in class_names):
-                temp_items = []
-                for item in nested_items:
-                    if item in class_names:
-                        src = os.path.join(nested_path, item)
-                        dst = os.path.join(base_dir, item)
-                        if not os.path.exists(dst):
-                            shutil.move(src, dst)
-                            temp_items.append(item)
-                if temp_items:
-                    shutil.rmtree(nested_path)
-
-def scan_sample_images():
-    """
-    Scan SAMPLE_DIR and collect image paths for each class.
-    Returns: {class_name: [image_paths]}
-    """
-    sample_dict = {}
-
-    if not os.path.exists(SAMPLE_DIR):
-        return sample_dict
-
-    for class_name in class_names:
-        class_path = os.path.join(SAMPLE_DIR, class_name)
-
-        if os.path.isdir(class_path):
-            images = []
-            for fname in os.listdir(class_path):
-                fpath = os.path.join(class_path, fname)
-                if os.path.isfile(fpath) and fname.lower().endswith((".jpg", ".jpeg", ".png")):
-                    images.append(fpath)
-
-            if images:
-                sample_dict[class_name] = sorted(images)
-
-    return sample_dict
-
-# --------------------------------------------------
-# AUTO-LOAD ZIP ON APP STARTUP
-# --------------------------------------------------
-if not st.session_state.load_attempted:
-    st.session_state.load_attempted = True
-
-    # Try to load plant_disease.zip from local repo
-    if os.path.exists(ZIP_FILE):
-        with st.spinner("🔄 Loading sample images from local ZIP..."):
-            success, message = extract_local_zip(ZIP_FILE)
-            if success:
-                st.success(message)
-            else:
-                st.warning(message)
-    else:
-        st.info(f"ℹ️ Place '{ZIP_FILE}' in the app directory to auto-load sample images.")
-
-# Load samples if not already loaded
-if not st.session_state.samples_loaded:
-    st.session_state.sample_dict = scan_sample_images()
-    if st.session_state.sample_dict:
-        st.session_state.samples_loaded = True
-
-# --------------------------------------------------
-# Model loading
-# --------------------------------------------------
+# Load model
 @st.cache_resource
 def load_model():
-    """Load trained Keras model"""
+    """Load the trained model"""
     try:
-        # Try .keras first (TensorFlow 2.13+), then .h5
-        if os.path.exists("plant_disease_model.keras"):
-            model = keras.models.load_model("plant_disease_model.keras")
-        else:
-            st.error("❌ Model file not found (plant_disease_model.keras)")
-            return None
+        model = keras.models.load_model(MODEL_PATH)
         return model
     except Exception as e:
-        st.error(f"❌ Could not load model: {e}")
+        st.error(f"Error loading model: {str(e)}")
         return None
 
-# --------------------------------------------------
-# Image preprocessing & prediction
-# --------------------------------------------------
-def preprocess_image(img: Image.Image) -> np.ndarray:
-    """Convert image to model input: 150x150 RGB, normalized [0,1]"""
-    if img.mode != "RGB":
-        img = img.convert("RGB")
-    img_resized = img.resize((150, 150))
-    arr = np.array(img_resized, dtype=np.float32) / 255.0
-    arr = np.expand_dims(arr, axis=0)
-    return arr
+# Preprocess image
+def preprocess_image(image):
+    """Preprocess image for model prediction"""
+    # Resize to 150x150 (training size)
+    img = image.resize((150, 150))
+    # Convert to array
+    img_array = np.array(img)
+    # Ensure 3 channels (RGB)
+    if img_array.shape[-1] != 3:
+        img_array = np.stack([img_array] * 3, axis=-1)
+    # Normalize to [0, 1]
+    img_array = img_array.astype('float32') / 255.0
+    # Add batch dimension
+    img_array = np.expand_dims(img_array, axis=0)
+    return img_array
 
-def predict_image(model, img: Image.Image):
-    """Get prediction probabilities for image"""
-    x = preprocess_image(img)
-    preds = model.predict(x, verbose=0)
-    idx = int(np.argmax(preds[0]))
-    conf = float(preds[0][idx])
-    return class_names[idx], conf, preds[0]
+# Make prediction
+def predict(model, image):
+    """Make prediction on image"""
+    img_array = preprocess_image(image)
+    predictions = model.predict(img_array, verbose=0)
 
-# --------------------------------------------------
-# Sidebar – Status & Manual reload
-# --------------------------------------------------
-with st.sidebar:
-    st.header("📊 Status")
+    # Get top 5 predictions
+    top_indices = np.argsort(predictions[0])[-5:][::-1]
+    top_predictions = [
+        {
+            "class": CLASS_NAMES[idx],
+            "confidence": float(predictions[0][idx] * 100)
+        }
+        for idx in top_indices
+    ]
 
-    if st.session_state.sample_dict:
-        total_images = sum(len(imgs) for imgs in st.session_state.sample_dict.values())
-        st.metric("✅ Classes loaded", len(st.session_state.sample_dict))
-        st.metric("📷 Total images", total_images)
+    return top_predictions
 
-        if st.button("🔄 Reload ZIP", use_container_width=True):
-            st.session_state.samples_loaded = False
-            st.session_state.sample_dict = {}
-            st.session_state.load_attempted = False
-            st.rerun()
-    else:
-        st.warning("⚠️ No sample images loaded")
-        if st.button("🔄 Reload ZIP", use_container_width=True):
-            st.session_state.load_attempted = False
-            st.rerun()
+# Display file structure
+def display_file_structure(image_dict):
+    """Display file structure of loaded images"""
+    st.markdown("### 📂 Loaded Sample Images")
 
-    st.divider()
+    for class_name in sorted(image_dict.keys()):
+        with st.expander(f"**{class_name}** ({len(image_dict[class_name])} images)"):
+            cols = st.columns(4)
+            for idx, img_path in enumerate(image_dict[class_name][:20]):  # Show first 20
+                with cols[idx % 4]:
+                    try:
+                        img = Image.open(img_path)
+                        st.image(img, caption=Path(img_path).name, use_container_width=True)
+                    except:
+                        st.error(f"Error loading {img_path}")
 
-    st.header("ℹ️ About")
-    st.write("**Plant Disease Detector**")
-    st.write("- 15 disease classes")
-    st.write("- Input: 150×150 RGB")
-    st.write("- Model: Deep CNN")
-    st.write("- Auto-loads: plant_disease.zip")
+# Main app
+def main():
+    st.title("🌿 Plant Disease Detection")
+    st.markdown("---")
 
-# --------------------------------------------------
-# Main tabs
-# --------------------------------------------------
-tab_predict, tab_samples, tab_gallery, tab_info = st.tabs([
-    "🔍 Predict", 
-    "📊 File Structure", 
-    "🖼️ Image Gallery", 
-    "ℹ️ Info"
-])
+    # Load sample images
+    with st.spinner("🔄 Loading sample images from local ZIP..."):
+        image_dict, total_images = load_sample_images()
 
-# ==================================================
-# TAB 1: PREDICT
-# ==================================================
-with tab_predict:
-    st.subheader("Predict Plant Disease")
+    # Sidebar
+    with st.sidebar:
+        st.header("ℹ️ About")
 
-    col_input, col_output = st.columns(2)
-
-    # Input column
-    with col_input:
-        st.write("### Upload or Select Sample")
-
-        # Upload
-        uploaded = st.file_uploader("📤 Upload leaf image", type=["jpg", "jpeg", "png"])
-
-        st.divider()
-
-        # Or use sample
-        st.write("**Or use sample image:**")
-        if st.session_state.sample_dict:
-            selected_class = st.selectbox(
-                "Select disease class",
-                ["(none)"] + list(st.session_state.sample_dict.keys()),
-                format_func=lambda x: "(No selection)" if x == "(none)" else x.replace("_", " ")
-            )
-
-            sample_path = None
-            if selected_class != "(none)":
-                images = st.session_state.sample_dict[selected_class]
-                if images:
-                    selected_image = st.selectbox(
-                        "Select image file",
-                        images,
-                        format_func=lambda x: os.path.basename(x),
-                        key="sample_select"
-                    )
-                    sample_path = selected_image
+        if image_dict:
+            st.success(f"✅ Classes loaded: {len(image_dict)}")
+            st.success(f"📷 Total images: {total_images}")
         else:
-            st.info("📦 Sample images not loaded yet. Checking for plant_disease.zip...")
-            selected_class = None
-            sample_path = None
+            st.warning("⚠️ No sample images loaded")
+            st.info("ℹ️ Place 'plant_images.zip' in the app directory to auto-load sample images.")
 
-    # Decide which image to use
-    image_to_process = None
-    image_source = None
+        st.markdown("---")
+        st.markdown("**Model:** CNN (150x150)")
+        st.markdown("**Classes:** 15 plant diseases")
+        st.markdown("**Accuracy:** ~98%")
 
-    if uploaded is not None:
-        image_to_process = Image.open(uploaded)
-        image_source = "Uploaded"
-    elif sample_path is not None:
-        image_to_process = Image.open(sample_path)
-        image_source = "Sample"
+    # Tabs
+    tab1, tab2, tab3, tab4 = st.tabs(["🔍 Predict", "📊 File Structure", "🖼️ Image Gallery", "ℹ️ Info"])
 
-    # Output column
-    with col_output:
-        if image_to_process is not None:
-            st.image(image_to_process, caption=f"Input Image ({image_source})", use_container_width=True)
+    # Tab 1: Prediction
+    with tab1:
+        st.header("Upload or Select Image")
 
-            model = load_model()
-            if model is not None:
-                st.write("### Prediction Result")
+        col1, col2 = st.columns([1, 1])
 
-                with st.spinner("🔬 Analyzing..."):
-                    pred_class, confidence, all_probs = predict_image(model, image_to_process)
+        with col1:
+            st.subheader("📤 Upload Image")
+            uploaded_file = st.file_uploader("Choose a leaf image", type=["jpg", "jpeg", "png"])
 
-                # Main prediction
-                st.metric("Predicted Class", pred_class.replace("_", " "))
-                st.metric("Confidence", f"{confidence*100:.2f}%")
-                st.progress(confidence)
+        with col2:
+            st.subheader("📁 Select Sample Image")
+            if image_dict:
+                selected_class = st.selectbox("Select Disease Class", options=sorted(image_dict.keys()))
+                if selected_class:
+                    selected_image = st.selectbox("Select Image", options=image_dict[selected_class])
+            else:
+                st.info("No sample images available")
+                selected_image = None
 
-                # Health status
-                if "healthy" in pred_class.lower():
-                    st.success("✅ Leaf appears HEALTHY")
+        # Choose prediction source
+        predict_source = None
+        if uploaded_file:
+            predict_source = Image.open(uploaded_file)
+            st.image(predict_source, caption="Uploaded Image", use_container_width=True)
+        elif image_dict and selected_image:
+            predict_source = Image.open(selected_image)
+            st.image(predict_source, caption="Selected Sample", use_container_width=True)
+
+        # Predict button
+        if st.button("🔬 Predict Disease", type="primary", use_container_width=True):
+            if predict_source is None:
+                st.warning("⚠️ Please upload or select an image first")
+            else:
+                model = load_model()
+                if model is None:
+                    st.error("❌ Model not loaded")
                 else:
-                    st.warning("⚠️ DISEASE DETECTED")
+                    with st.spinner("🔄 Analyzing..."):
+                        results = predict(model, predict_source)
 
-                # Top 5 probabilities
-                st.write("**Top 5 predictions:**")
-                top5_idx = np.argsort(all_probs)[-5:][::-1]
-                for rank, idx in enumerate(top5_idx, 1):
-                    prob_pct = all_probs[idx] * 100
-                    st.write(f"{rank}. {class_names[idx].replace('_', ' ')} — {prob_pct:.2f}%")
+                    st.markdown("---")
+                    st.subheader("📊 Prediction Results")
+
+                    # Top prediction
+                    top_result = results[0]
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("🏆 Top Prediction", top_result["class"])
+                    with col2:
+                        st.metric("✅ Confidence", f"{top_result['confidence']:.2f}%")
+
+                    # Health status
+                    if "healthy" in top_result["class"].lower():
+                        st.success("✅ Plant appears HEALTHY")
+                    else:
+                        st.error("⚠️ Disease DETECTED")
+
+                    # Top 5 predictions
+                    st.markdown("### 📈 Top 5 Predictions")
+                    for i, result in enumerate(results, 1):
+                        st.progress(result["confidence"] / 100)
+                        st.write(f"**{i}. {result['class']}** - {result['confidence']:.2f}%")
+
+    # Tab 2: File Structure
+    with tab2:
+        if image_dict:
+            st.subheader("📂 File Structure")
+            st.write(f"**Total Classes:** {len(image_dict)}")
+            st.write(f"**Total Images:** {total_images}")
+            st.markdown("---")
+
+            for class_name in sorted(image_dict.keys()):
+                st.write(f"**{class_name}** - {len(image_dict[class_name])} images")
         else:
-            st.info("👆 Upload an image or select a sample image")
+            st.info("No sample images loaded")
 
-# ==================================================
-# TAB 2: FILE STRUCTURE
-# ==================================================
-with tab_samples:
-    st.subheader("📁 Sample Images File Structure")
+    # Tab 3: Image Gallery
+    with tab3:
+        if image_dict:
+            st.subheader("🖼️ Sample Image Gallery")
+            display_file_structure(image_dict)
+        else:
+            st.info("No sample images loaded")
 
-    if not st.session_state.sample_dict:
-        st.warning("No sample images loaded yet.")
-        st.code(f"Looking for: {ZIP_FILE}")
-    else:
-        # Build file tree
-        file_structure = f"sample_images/  ({len(st.session_state.sample_dict)} classes)\n"
+    # Tab 4: Info
+    with tab4:
+        st.subheader("ℹ️ Model Information")
 
-        total_images = 0
-        for i, class_name in enumerate(class_names):
-            if class_name in st.session_state.sample_dict:
-                images = st.session_state.sample_dict[class_name]
-                total_images += len(images)
+        st.markdown("""
+        ### 🌿 Plant Disease Detection CNN
 
-                is_last = (i == len(class_names) - 1)
-                prefix = "└── " if is_last else "├── "
-                file_structure += f"{prefix}{class_name}/  ({len(images)} images)\n"
+        **Architecture:**
+        - Input: 150x150x3 RGB images
+        - Conv2D(32) → MaxPool → Conv2D(64) → MaxPool
+        - Flatten → Dense(32) → Dense(15, softmax)
 
-                # Show first 3 image names
-                for j, img_path in enumerate(images[:3]):
-                    fname = os.path.basename(img_path)
-                    is_last_img = (j == len(images[:3]) - 1) and (len(images) <= 3)
-                    subprefix = "    └── " if is_last_img else "    ├── "
-                    file_structure += f"{subprefix}{fname}\n"
+        **Training:**
+        - Dataset: PlantVillage (20,638 images)
+        - 15 classes (Tomato, Potato, Pepper diseases + healthy)
+        - Accuracy: ~98.7% validation
 
-                if len(images) > 3:
-                    file_structure += f"    └── ... and {len(images) - 3} more\n"
-
-        st.code(file_structure, language="text")
-
-        st.divider()
-
-        # Summary
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Classes", len(st.session_state.sample_dict))
-        col2.metric("Total Images", total_images)
-        col3.metric("Avg Images/Class", round(total_images / len(st.session_state.sample_dict), 1) if st.session_state.sample_dict else 0)
-
-# ==================================================
-# TAB 3: IMAGE GALLERY
-# ==================================================
-with tab_gallery:
-    st.subheader("🖼️ Sample Images Gallery by Disease Class")
-
-    if not st.session_state.sample_dict:
-        st.warning("No sample images loaded yet.")
-        st.info("📦 Ensure plant_disease.zip is in your repository directory")
-    else:
-        # Show all classes
-        for class_name in class_names:
-            if class_name not in st.session_state.sample_dict:
-                continue
-
-            images = st.session_state.sample_dict[class_name]
-            num_images = len(images)
-
-            with st.expander(f"📌 {class_name.replace('_', ' ')} ({num_images} images)", expanded=False):
-                # Grid of images
-                cols = st.columns(4)
-
-                for idx, img_path in enumerate(images):
-                    col = cols[idx % 4]
-                    with col:
-                        try:
-                            img = Image.open(img_path)
-                            st.image(img, use_container_width=True)
-                            st.caption(os.path.basename(img_path))
-                        except Exception as e:
-                            st.error(f"Could not load: {os.path.basename(img_path)}")
-
-# ==================================================
-# TAB 4: INFO
-# ==================================================
-with tab_info:
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("🧠 Model Architecture")
-        st.code("""
-Input: 150×150×3 (RGB image)
-    ↓
-Conv2D(32 filters, 3×3, ReLU)
-    ↓
-MaxPooling2D(2×2)
-    ↓
-Conv2D(64 filters, 3×3, ReLU)
-    ↓
-MaxPooling2D(2×2)
-    ↓
-Flatten
-    ↓
-Dense(32, ReLU)
-    ↓
-Dense(15, Softmax)
-    ↓
-Output: 15 classes
+        **Classes:**
         """)
 
-        st.subheader("📊 Performance")
-        st.write("- **Training Accuracy:** ~98.7%")
-        st.write("- **Validation Accuracy:** ~98.6%")
-        st.write("- **Total Parameters:** 2.67M")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown("**Tomato (9)**")
+            st.write("- Bacterial spot")
+            st.write("- Early blight")
+            st.write("- Late blight")
+            st.write("- Leaf Mold")
+            st.write("- Septoria leaf spot")
+            st.write("- Spider mites")
+            st.write("- Target Spot")
+            st.write("- Yellow Leaf Curl Virus")
+            st.write("- Mosaic virus")
+            st.write("- Healthy")
 
-    with col2:
-        st.subheader("🌱 Disease Classes (15)")
+        with col2:
+            st.markdown("**Potato (3)**")
+            st.write("- Early blight")
+            st.write("- Late blight")
+            st.write("- Healthy")
 
-        # Organize by plant
-        plants = {
-            "🍅 Tomato": [c for c in class_names if "Tomato" in c],
-            "🥔 Potato": [c for c in class_names if "Potato" in c],
-            "🫑 Pepper": [c for c in class_names if "Pepper" in c],
-        }
+        with col3:
+            st.markdown("**Pepper (2)**")
+            st.write("- Bacterial spot")
+            st.write("- Healthy")
 
-        for plant, classes in plants.items():
-            with st.expander(plant):
-                for cls in classes:
-                    disease = cls.split("___")[-1]
-                    st.write(f"- {disease.replace('_', ' ')}")
-
-    st.divider()
-
-    st.subheader("💡 Usage Tips")
-    st.write("""
-    ✓ **Image quality matters:**
-      - Use clear, well-lit photos
-      - Focus on the leaf area
-      - Avoid motion blur
-      - Single leaf works best
-
-    ✓ **For best results:**
-      - Plain background preferred
-      - Capture both healthy & diseased areas
-      - Use natural lighting
-      - Avoid shadows
-
-    ✓ **Model limitations:**
-      - Trained on 15 disease classes
-      - Works best for tomato, potato, pepper
-      - Confidence scores guide reliability
-      - Always verify with expert opinion
-    """)
-
-    st.divider()
-
-    st.subheader("📦 Repository Setup")
-    st.write(f"""
-    **Required file:** `{ZIP_FILE}`
-
-    Your repository should have:
-    ```
-    your-repo/
-    ├── app.py
-    ├── requirements.txt
-    ├── plant_disease_model.h5 (or .keras)
-    └── plant_disease.zip (contains sample images)
-    ```
-
-    **ZIP structure inside:**
-    ```
-    plant_disease.zip
-    └── sample_images/
-        ├── Tomato__Tomato_mosaic_virus/
-        ├── Potato___Early_blight/
-        ├── ... (15 folders)
-        └── Pepper__bell___Bacterial_spot/
-    ```
-    """)
+if __name__ == "__main__":
+    main()
