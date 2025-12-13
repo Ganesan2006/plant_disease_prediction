@@ -37,7 +37,7 @@ CLASS_NAMES = [
 # Model path
 MODEL_PATH = "plant_disease_model.keras"
 ZIP_PATH = "plant_images.zip"
-EXTRACT_DIR = "sample_images"
+EXTRACT_DIR = ""
 
 # Auto-load sample images from ZIP
 @st.cache_resource
