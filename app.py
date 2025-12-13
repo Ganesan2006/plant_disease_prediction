@@ -43,7 +43,7 @@ class_names = [
 
 NUM_CLASSES = len(class_names)
 SAMPLE_DIR = "sample_images"
-ZIP_FILE = "plant_disease.zip"
+ZIP_FILE = "plant_images.zip"
 
 # --------------------------------------------------
 # Session state for sample images
