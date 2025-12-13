@@ -337,7 +337,7 @@ Contributions are welcome! To contribute:
 
 ## 📧 Contact & Support
 
-- 📧 Email: your-email@example.com
+- 📧 Email: ganesant2007@gmail.com
 - 🐛 Issues: Open an issue on GitHub
 - 💬 Discussions: Use GitHub Discussions
 
