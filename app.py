@@ -184,10 +184,8 @@ def load_model():
     """Load trained Keras model"""
     try:
         # Try .keras first (TensorFlow 2.13+), then .h5
-        if os.path.exists("plantdiseasemodel.keras"):
+        if os.path.exists("plant_disease_model.keras"):
             model = keras.models.load_model("plantdiseasemodel.keras")
-        elif os.path.exists("plant_disease_model.h5"):
-            model = keras.models.load_model("plant_disease_model.h5")
         else:
             st.error("❌ Model file not found (plantdiseasemodel.keras or plant_disease_model.h5)")
             return None
