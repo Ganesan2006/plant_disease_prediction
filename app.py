@@ -185,9 +185,9 @@ def load_model():
     try:
         # Try .keras first (TensorFlow 2.13+), then .h5
         if os.path.exists("plant_disease_model.keras"):
-            model = keras.models.load_model("plantdiseasemodel.keras")
+            model = keras.models.load_model("plant_disease_model.keras")
         else:
-            st.error("❌ Model file not found (plantdiseasemodel.keras or plant_disease_model.h5)")
+            st.error("❌ Model file not found (plant_disease_model.keras)")
             return None
         return model
     except Exception as e:
