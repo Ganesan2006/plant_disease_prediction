@@ -5,8 +5,6 @@ import numpy as np
 from PIL import Image
 import os
 import zipfile
-import requests
-from io import BytesIO
 import shutil
 from pathlib import Path
 
@@ -45,6 +43,7 @@ class_names = [
 
 NUM_CLASSES = len(class_names)
 SAMPLE_DIR = "sample_images"
+ZIP_FILE = "plant_disease.zip"
 
 # --------------------------------------------------
 # Session state for sample images
@@ -53,56 +52,57 @@ if "samples_loaded" not in st.session_state:
     st.session_state.samples_loaded = False
 if "sample_dict" not in st.session_state:
     st.session_state.sample_dict = {}
+if "load_attempted" not in st.session_state:
+    st.session_state.load_attempted = False
 
 # --------------------------------------------------
-# Helper: download & extract ZIP from GitHub
+# Helper: Extract ZIP from local repository
 # --------------------------------------------------
-def download_and_extract_zip(github_zip_url: str):
+def extract_local_zip(zip_path: str):
     """
-    Download zip file from GitHub and extract to SAMPLE_DIR folder.
-    Handle nested folder structure from GitHub exports.
+    Extract plant_disease.zip from local repository.
+    Handles nested folder structure from ZIP exports.
     """
     try:
-        st.info("📥 Downloading ZIP file...")
-        response = requests.get(github_zip_url, timeout=60)
-        response.raise_for_status()
+        if not os.path.exists(zip_path):
+            return False, f"❌ ZIP file not found: {zip_path}"
+
+        st.info("📦 Extracting sample images from ZIP...")
 
         # Clean existing folder
         if os.path.exists(SAMPLE_DIR):
             shutil.rmtree(SAMPLE_DIR)
 
-        st.info("📦 Extracting files...")
-        with zipfile.ZipFile(BytesIO(response.content)) as zf:
+        # Extract ZIP
+        with zipfile.ZipFile(zip_path, 'r') as zf:
             zf.extractall(SAMPLE_DIR)
 
-        # GitHub creates nested structure: repo-name-branch/sample_images/class_name/
-        # We need to flatten it
+        # Flatten structure if needed
         flatten_extracted_folder()
 
         st.session_state.samples_loaded = True
         st.session_state.sample_dict = scan_sample_images()
 
-        return True, f"✅ Successfully loaded {len(st.session_state.sample_dict)} classes with images!"
+        total_imgs = sum(len(v) for v in st.session_state.sample_dict.values())
+        return True, f"✅ Successfully extracted! {len(st.session_state.sample_dict)} classes, {total_imgs} images found"
 
-    except requests.exceptions.RequestException as e:
-        return False, f"❌ Network error: {e}"
     except zipfile.BadZipFile:
-        return False, "❌ Invalid ZIP file"
+        return False, "❌ Invalid or corrupted ZIP file"
+    except PermissionError:
+        return False, "❌ Permission denied accessing ZIP file"
     except Exception as e:
-        return False, f"❌ Error: {str(e)}"
+        return False, f"❌ Error extracting ZIP: {str(e)}"
 
 def flatten_extracted_folder():
     """
-    GitHub ZIP creates: repo-name-branch/sample_images/class/image.jpg
+    ZIP may create nested structure: some-folder/sample_images/class/image.jpg
     We need: sample_images/class/image.jpg
     This function flattens the structure if needed.
     """
     base_dir = SAMPLE_DIR
-
-    # Check if there's a nested folder structure
     items = os.listdir(base_dir)
 
-    # If only one folder inside and it's not a class name, it's likely the GitHub folder
+    # If only one folder inside and it's not a class name
     if len(items) == 1 and items[0] not in class_names:
         nested_path = os.path.join(base_dir, items[0])
         if os.path.isdir(nested_path):
@@ -115,6 +115,18 @@ def flatten_extracted_folder():
                 shutil.move(inner_sample_path, temp_dir)
                 shutil.rmtree(base_dir)
                 shutil.move(temp_dir, base_dir)
+            # Otherwise, move all class folders up
+            elif any(item in nested_items for item in class_names):
+                temp_items = []
+                for item in nested_items:
+                    if item in class_names:
+                        src = os.path.join(nested_path, item)
+                        dst = os.path.join(base_dir, item)
+                        if not os.path.exists(dst):
+                            shutil.move(src, dst)
+                            temp_items.append(item)
+                if temp_items:
+                    shutil.rmtree(nested_path)
 
 def scan_sample_images():
     """
@@ -140,6 +152,23 @@ def scan_sample_images():
                 sample_dict[class_name] = sorted(images)
 
     return sample_dict
+
+# --------------------------------------------------
+# AUTO-LOAD ZIP ON APP STARTUP
+# --------------------------------------------------
+if not st.session_state.load_attempted:
+    st.session_state.load_attempted = True
+
+    # Try to load plant_disease.zip from local repo
+    if os.path.exists(ZIP_FILE):
+        with st.spinner("🔄 Loading sample images from local ZIP..."):
+            success, message = extract_local_zip(ZIP_FILE)
+            if success:
+                st.success(message)
+            else:
+                st.warning(message)
+    else:
+        st.info(f"ℹ️ Place '{ZIP_FILE}' in the app directory to auto-load sample images.")
 
 # Load samples if not already loaded
 if not st.session_state.samples_loaded:
@@ -188,35 +217,26 @@ def predict_image(model, img: Image.Image):
     return class_names[idx], conf, preds[0]
 
 # --------------------------------------------------
-# Sidebar – GitHub ZIP loader & info
+# Sidebar – Status & Manual reload
 # --------------------------------------------------
 with st.sidebar:
-    st.header("📁 Load Sample Images from GitHub")
+    st.header("📊 Status")
 
-    github_url = st.text_input(
-        "GitHub ZIP URL",
-        placeholder="https://github.com/username/repo/archive/refs/heads/main.zip",
-        help="Paste raw GitHub ZIP URL of your sample_images repository"
-    )
+    if st.session_state.sample_dict:
+        total_images = sum(len(imgs) for imgs in st.session_state.sample_dict.values())
+        st.metric("✅ Classes loaded", len(st.session_state.sample_dict))
+        st.metric("📷 Total images", total_images)
 
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if st.button("📥 Load ZIP", use_container_width=True):
-            with st.spinner("Processing..."):
-                success, message = download_and_extract_zip(github_url)
-                if success:
-                    st.success(message)
-                else:
-                    st.error(message)
-
-    with col2:
-        if st.button("🔄 Refresh", use_container_width=True):
-            st.session_state.sample_dict = scan_sample_images()
-            if st.session_state.sample_dict:
-                st.success(f"Found {len(st.session_state.sample_dict)} classes")
-            else:
-                st.warning("No images found")
+        if st.button("🔄 Reload ZIP", use_container_width=True):
+            st.session_state.samples_loaded = False
+            st.session_state.sample_dict = {}
+            st.session_state.load_attempted = False
+            st.rerun()
+    else:
+        st.warning("⚠️ No sample images loaded")
+        if st.button("🔄 Reload ZIP", use_container_width=True):
+            st.session_state.load_attempted = False
+            st.rerun()
 
     st.divider()
 
@@ -224,18 +244,8 @@ with st.sidebar:
     st.write("**Plant Disease Detector**")
     st.write("- 15 disease classes")
     st.write("- Input: 150×150 RGB")
-    st.write("- Model: CNN (Conv2D + Dense)")
-
-    st.divider()
-
-    # Show status
-    st.subheader("📊 Status")
-    if st.session_state.sample_dict:
-        total_images = sum(len(imgs) for imgs in st.session_state.sample_dict.values())
-        st.metric("Classes with images", len(st.session_state.sample_dict))
-        st.metric("Total images", total_images)
-    else:
-        st.warning("No sample images loaded")
+    st.write("- Model: Deep CNN")
+    st.write("- Auto-loads: plant_disease.zip")
 
 # --------------------------------------------------
 # Main tabs
@@ -280,11 +290,12 @@ with tab_predict:
                     selected_image = st.selectbox(
                         "Select image file",
                         images,
-                        format_func=lambda x: os.path.basename(x)
+                        format_func=lambda x: os.path.basename(x),
+                        key="sample_select"
                     )
                     sample_path = selected_image
         else:
-            st.info("Load sample images from sidebar first")
+            st.info("📦 Sample images not loaded yet. Checking for plant_disease.zip...")
             selected_class = None
             sample_path = None
 
@@ -339,7 +350,7 @@ with tab_samples:
 
     if not st.session_state.sample_dict:
         st.warning("No sample images loaded yet.")
-        st.info("👉 Use the sidebar to load images from GitHub ZIP")
+        st.code(f"Looking for: {ZIP_FILE}")
     else:
         # Build file tree
         file_structure = f"sample_images/  ({len(st.session_state.sample_dict)} classes)\n"
@@ -372,7 +383,7 @@ with tab_samples:
         col1, col2, col3 = st.columns(3)
         col1.metric("Total Classes", len(st.session_state.sample_dict))
         col2.metric("Total Images", total_images)
-        col3.metric("Avg Images/Class", round(total_images / len(st.session_state.sample_dict), 1))
+        col3.metric("Avg Images/Class", round(total_images / len(st.session_state.sample_dict), 1) if st.session_state.sample_dict else 0)
 
 # ==================================================
 # TAB 3: IMAGE GALLERY
@@ -382,7 +393,7 @@ with tab_gallery:
 
     if not st.session_state.sample_dict:
         st.warning("No sample images loaded yet.")
-        st.info("👉 Use the sidebar to load images from GitHub ZIP")
+        st.info("📦 Ensure plant_disease.zip is in your repository directory")
     else:
         # Show all classes
         for class_name in class_names:
@@ -472,8 +483,34 @@ Output: 15 classes
       - Avoid shadows
 
     ✓ **Model limitations:**
-      - Trained on PlantVillage dataset
+      - Trained on 15 disease classes
       - Works best for tomato, potato, pepper
       - Confidence scores guide reliability
       - Always verify with expert opinion
+    """)
+
+    st.divider()
+
+    st.subheader("📦 Repository Setup")
+    st.write(f"""
+    **Required file:** `{ZIP_FILE}`
+
+    Your repository should have:
+    ```
+    your-repo/
+    ├── app.py
+    ├── requirements.txt
+    ├── plant_disease_model.h5 (or .keras)
+    └── plant_disease.zip (contains sample images)
+    ```
+
+    **ZIP structure inside:**
+    ```
+    plant_disease.zip
+    └── sample_images/
+        ├── Tomato__Tomato_mosaic_virus/
+        ├── Potato___Early_blight/
+        ├── ... (15 folders)
+        └── Pepper__bell___Bacterial_spot/
+    ```
     """)
